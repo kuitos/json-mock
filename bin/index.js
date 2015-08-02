@@ -6,31 +6,53 @@ var chalk = require('chalk')
 var got = require('got')
 var pkg = require('../package.json')
 var jsonServer = require('../src')
+var express = require('express')
+var proxy = require('express-http-proxy')
+var url = require('url')
+var fs = require('fs')
 
 updateNotifier({packageName: pkg.name, packageVersion: pkg.version}).notify()
 
 // Parse arguments
 var argv = yargs
-  .usage('$0 <source>')
-  .help('help').alias('help', 'h')
-  .version(pkg.version, 'version').alias('version', 'v')
-  .options({
-    port: {
-      alias: 'p',
-      description: 'Set port',
-      default: 3000
-    },
-    host: {
-      alias: 'H',
-      description: 'Set host',
-      default: '0.0.0.0'
-    }
-  })
-  .example('$0 db.json', '')
-  .example('$0 file.js', '')
-  .example('$0 http://example.com/db.json', '')
-  .require(1, 'Missing <source> argument')
-  .argv
+    .usage('$0 <source>')
+    .help('help').alias('help', 'h')
+    .version(pkg.version, 'version').alias('version', 'v')
+    .options({
+      port       : {
+        alias      : 'p',
+        description: 'Set port',
+        default    : 3000
+      },
+      host       : {
+        alias      : 'H',
+        description: 'Set host',
+        default    : '0.0.0.0'
+      },
+      "static"   : {
+        alias      : 's',
+        description: 'Set static file server directory',
+        default    : 'public'
+      },
+      "proxyHost": {
+        alias      : 'ph',
+        description: 'Set proxy server host',
+        default    : ''
+      },
+      "proxyPort": {
+        alias      : 'pp',
+        description: 'Set proxy server port'
+      },
+      "apiPrefix": {
+        alias      : 'ap',
+        description: 'Set your rest api prefix'
+      }
+    })
+    .example('$0 db.json', '')
+    .example('$0 file.js', '')
+    .example('$0 http://example.com/db.json', '')
+    .require(1, 'Missing <source> argument')
+    .argv
 
 // Start server function
 function start(object, filename) {
@@ -38,15 +60,15 @@ function start(object, filename) {
   var hostname = argv.host === '0.0.0.0' ? 'localhost' : argv.host
 
   for (var prop in object) {
-    console.log(chalk.gray('  http://' + hostname +  ':' + port + '/') + chalk.cyan(prop))
+    console.log(chalk.gray('  http://' + hostname + ':' + port + '/') + chalk.cyan(prop))
   }
 
   console.log(
-    '\nYou can now go to ' + chalk.gray('http://' + hostname + ':' + port + '/\n')
+      '\nYou can now go to ' + chalk.gray('http://' + hostname + ':' + port + '/\n')
   )
 
   console.log(
-    'Enter ' + chalk.cyan('`s`') + ' at any time to create a snapshot of the db\n'
+      'Enter ' + chalk.cyan('`s`') + ' at any time to create a snapshot of the db\n'
   )
 
   process.stdin.resume()
@@ -66,8 +88,37 @@ function start(object, filename) {
   }
 
   var server = jsonServer.create()
+
+  // modify static server root dir if arg exist
+  var staticDir = argv.static || 'public'
+  if (fs.existsSync(process.cwd() + staticDir)) {
+    jsonServer.defaults[jsonServer.defaults.length - 2] = express.static(process.cwd() + staticDir)
+  } else {
+    jsonServer.defaults[jsonServer.defaults.length - 2] = express.static(__dirname + staticDir)
+  }
   server.use(jsonServer.defaults)
-  server.use(router)
+
+  // if u has config proxy host, use proxy server to power your api
+  // else we use db.json to mock api
+  if (argv.proxyHost) {
+
+    if (!argv.proxyPort) {
+      throw new Error('pls config proxy host port');
+    } else {
+
+      server.use(argv.apiPrefix + '/**', proxy(argv.proxyHost, {
+        forwardPath: function (req, res) {
+          return url.parse(req.originalUrl).path;
+        },
+
+        port: argv.proxyPort
+      }))
+    }
+
+  } else {
+    server.use(router)
+  }
+
   server.listen(port, argv.host)
 }
 
@@ -90,7 +141,7 @@ if (/\.js$/.test(source)) {
 }
 
 if (/^http/.test(source)) {
-  got(source, function(err, data) {
+  got(source, function (err, data) {
     if (err) throw err
     var object = JSON.parse(data)
     start(object)
